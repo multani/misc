@@ -1,0 +1,175 @@
+#!/usr/bin/env python
+
+from optparse import OptionParser
+import os
+from subprocess import check_call
+import sys
+
+
+DEBUG = False
+HERE = os.path.abspath(os.path.dirname(__file__))
+
+
+def run(*popenargs, **kwargs):
+    cmd = popenargs[0]
+
+    if DEBUG:
+        if isinstance(cmd, list):
+            print "Running: %s" % " ".join(cmd)
+        else:
+            print "Running: %s" % cmd
+
+    return check_call(*popenargs, **kwargs)
+
+
+def run_output(*popenargs, **kwargs):
+    cmd = popenargs[0]
+
+    if DEBUG:
+        if isinstance(cmd, list):
+            print "Running: %s" % " ".join(cmd)
+        else:
+            print "Running: %s" % cmd
+
+    return check_output(*popenargs, **kwargs)
+
+
+def check_output(*popenargs, **kwargs): # From python2.6
+    r"""Run command with arguments and return its output as a byte string.
+
+    If the exit code was non-zero it raises a CalledProcessError.  The
+    CalledProcessError object will have the return code in the
+    returncode
+    attribute and output in the output attribute.
+
+    The arguments are the same as for the Popen constructor.
+    Example:
+
+    >>> check_output(["ls", "-l", "/dev/null"])
+    'crw-rw-rw- 1 root root 1, 3 Oct 18  2007 /dev/null\n'
+
+    The stdout argument is not allowed as it
+    is used internally.
+    To capture standard error in the
+    result, use stderr=STDOUT.
+
+    >>> check_output(["/bin/sh", "-c",
+    ...               "ls -l non_existent_file ; exit 0"],
+    ...               stderr=STDOUT)
+    'ls: non_existent_file: No such file or directory\n'
+    """
+
+    from subprocess import Popen, PIPE, CalledProcessError
+
+    if 'stdout' in kwargs:
+        raise ValueError('stdout argument not allowed, it will be overridden.')
+
+    process = Popen(stdout=PIPE, *popenargs, **kwargs)
+    output, unused_err = process.communicate()
+    retcode = process.poll()
+    if retcode:
+        cmd = kwargs.get("args")
+        if cmd is None:
+            cmd = popenargs[0]
+        raise CalledProcessError(retcode, cmd) #, output=output)
+    return output
+
+
+def convert_to_git(src, dst):
+
+    print "Converting SVN repository %s to Git repository %s" % (
+        src, dst)
+
+    env = os.environ.copy()
+    env['GIT_DIR'] = os.path.join(dst, '.git')
+
+    git = lambda *args, **kwargs: run_output(
+        ["git"] + args[0], *args[1:], env=env, **kwargs)
+
+    if os.path.exists(dst):
+        print "Fetching new revisions..."
+        git(["svn", "fetch"])
+    else:
+        print "Cloning from %s" % src
+        git(["svn", "clone", "--stdlayout", src, dst])
+
+    tags = [line.strip()
+            for line in check_output(["git", "tag"], env=env).split('\n')
+            if line.strip() != '']
+    branches = [line[2:].strip()
+                for line in check_output(["git", "branch"], env=env).split('\n')
+                if line.strip() != '']
+
+    print "Found %d tags and %d branches" % (len(tags), len(branches))
+
+    refs = [line[2:].strip()
+            for line in git(["branch", "-a"]).split('\n')
+            if line.strip() != '']
+
+    # Add tags
+    for tag_ref in (line for line in refs if line.startswith('remotes/tags')):
+
+        tag = tag_ref.split('/', 2)[2]
+        if tag not in tags:
+
+            # First, find the author of the commit we want to tag
+            # Take only the first line, since some lines seems to be broken
+            # sometimes !?
+            commiter = check_output(
+                ["git", "show", "--pretty=format:%cN", tag_ref],
+                env=env).strip().split('\n')[0]
+
+            # Change the author of the next commit
+            git(["config", "user.name", commiter])
+
+            print "Tagging %r with %r" % (tag_ref, tag)
+            # Now, create the tag
+            git(["tag",
+                 "-a", "-m", "Tag release: %s" % tag,
+                 tag, tag_ref])
+
+            # And unset the configuration we changed before
+            git(["config", "--remove-section", "user"])
+
+    # Add branches
+    for branch_ref in (line for line in refs
+                       if line.startswith('remotes/') and
+                          not line.startswith('remotes/tags') and
+                          not line.startswith('remotes/trunk')):
+        branch = branch_ref.split('/', 1)[1]
+        if branch not in branches:
+            print "Creating branch %r from %r" % (branch, branch_ref)
+            git(["branch", branch, branch_ref])
+
+    # Compress the Git data
+    print "Clean the repository"
+    git(["repack", "-Adfq"])
+
+
+
+def run(argv=None):
+    global DEBUG # beuargh
+
+    if argv is None:
+        argv = sys.argv
+
+    parser = OptionParser(usage="%prog SVN_URL [DEST]")
+    parser.add_option('-d', '--debug', action='store_true', dest="debug",
+                      help="Display commands run", default=False)
+    (options, args) = parser.parse_args(argv)
+
+    DEBUG = options.debug
+
+
+    if len(args) == 3:
+        (svn_url, dest) = args[1:]
+    else:
+        parser.error("Not enought argument")
+
+    convert_to_git(svn_url, dest)
+
+
+if __name__ == '__main__':
+    run()
+
+
