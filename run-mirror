@@ -134,8 +134,12 @@ def convert_to_git(src, dst):
     # Add branches
     for branch_ref in (line for line in refs
                        if line.startswith('remotes/') and
-                          not line.startswith('remotes/tags') and
-                          not line.startswith('remotes/trunk')):
+                       # Don't create branch already pushed!
+                       # 'origin' here is the repository where the mirror is
+                       # mirrored to, not where it's mirrored *from*.
+                       not line.startswith('remotes/origin/') and
+                       not line.startswith('remotes/tags') and
+                       not line.startswith('remotes/trunk')):
         branch = branch_ref.split('/', 1)[1]
         if branch not in branches:
             print "Creating branch %r from %r" % (branch, branch_ref)
